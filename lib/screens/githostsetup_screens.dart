@@ -12,6 +12,7 @@ import 'package:gitjournal/analytics.dart';
 import 'package:gitjournal/apis/githost_factory.dart';
 import 'package:gitjournal/state_container.dart';
 import 'package:gitjournal/utils.dart';
+import 'package:gitjournal/settings.dart';
 import 'package:path/path.dart' as p;
 import 'package:url_launcher/url_launcher.dart';
 
@@ -52,7 +53,6 @@ class GitHostSetupScreenState extends State<GitHostSetupScreen> {
   int _currentPageIndex = 0;
 
   Widget _buildPage(BuildContext context, int pos) {
-    Fimber.d("_buildPage " + pos.toString());
     assert(_pageCount >= 1);
 
     if (pos == 0) {
@@ -176,6 +176,12 @@ class GitHostSetupScreenState extends State<GitHostSetupScreen> {
               _startGitClone(context);
             });
           },
+          regenerateFunction: () {
+            setState(() {
+              publicKey = "";
+            });
+            _generateSshKey(context);
+          },
           publicKey: publicKey,
           copyKeyFunction: _copyKeyToClipboard,
           openDeployKeyPage: _launchDeployKeyPage,
@@ -201,39 +207,11 @@ class GitHostSetupScreenState extends State<GitHostSetupScreen> {
 
   @override
   Widget build(BuildContext context) {
-    Fimber.d("build _pageCount " + _pageCount.toString());
-    Fimber.d("build _currentPageIndex " + _currentPageIndex.toString());
-
     var pageView = PageView.builder(
       controller: pageController,
       itemBuilder: _buildPage,
       itemCount: _pageCount,
       onPageChanged: (int pageNum) {
-        Fimber.d("PageView onPageChanged: " + pageNum.toString());
-        /*
-        String pageName = "";
-        switch (pageNum) {
-          case 0:
-            pageName = "OnBoardingGitUrl";
-            break;
-
-          case 1:
-            pageName = "OnBoardingSshKey";
-            break;
-
-          case 2:
-            pageName = "OnBoardingGitClone";
-            break;
-        }
-        getAnalytics().logEvent(
-          name: "onboarding_page_changed",
-          parameters: <String, dynamic>{
-            'page_num': pageNum,
-            'page_name': pageName,
-          },
-        );
-        */
-
         setState(() {
           _currentPageIndex = pageNum;
           _pageCount = _currentPageIndex + 1;
@@ -267,7 +245,7 @@ class GitHostSetupScreenState extends State<GitHostSetupScreen> {
           if (Platform.isIOS)
             InkWell(
               child: Container(
-                child: Icon(Icons.arrow_back, size: 32.0),
+                child: const Icon(Icons.arrow_back, size: 32.0),
                 padding: const EdgeInsets.all(8.0),
               ),
               onTap: () => Navigator.of(context).pop(),
@@ -300,6 +278,10 @@ class GitHostSetupScreenState extends State<GitHostSetupScreen> {
   }
 
   void _generateSshKey(BuildContext context) {
+    if (publicKey.isNotEmpty) {
+      return;
+    }
+
     var comment = "GitJournal " +
         Platform.operatingSystem +
         " " +
@@ -308,6 +290,7 @@ class GitHostSetupScreenState extends State<GitHostSetupScreen> {
     generateSSHKeys(comment: comment).then((String publicKey) {
       setState(() {
         this.publicKey = publicKey;
+        Fimber.d("PublicKey: " + publicKey);
         _copyKeyToClipboard(context);
       });
     });
@@ -367,15 +350,21 @@ class GitHostSetupScreenState extends State<GitHostSetupScreen> {
   }
 
   void _startGitClone(BuildContext context) async {
+    setState(() {
+      gitCloneErrorMessage = "";
+    });
+
     var appState = StateContainer.of(context).appState;
     var basePath = appState.gitBaseDirectory;
 
     // Just in case it was half cloned because of an error
     await _removeExistingClone(basePath);
 
+    String repoPath = p.join(basePath, "journal");
     String error;
     try {
-      await GitRepo.clone(p.join(basePath, "journal"), _gitCloneUrl);
+      Fimber.d("Cloning " + _gitCloneUrl);
+      await GitRepo.clone(repoPath, _gitCloneUrl);
     } on GitException catch (e) {
       error = e.cause;
     }
@@ -391,6 +380,24 @@ class GitHostSetupScreenState extends State<GitHostSetupScreen> {
         gitCloneErrorMessage = error;
       });
       return;
+    }
+
+    //
+    // Add a GitIgnore file. This way we always at least have one commit
+    // It makes doing a git pull and push easier
+    //
+    var gitIgnorePath = p.join(repoPath, ".gitignore");
+    var ignoreFile = File(gitIgnorePath);
+    if (!ignoreFile.existsSync()) {
+      ignoreFile.createSync();
+
+      var repo = GitRepo(
+        folderPath: repoPath,
+        authorName: Settings.instance.gitAuthor,
+        authorEmail: Settings.instance.gitAuthorEmail,
+      );
+      await repo.add('.gitignore');
+      await repo.commit(message: "Add gitignore file");
     }
 
     getAnalytics().logEvent(
